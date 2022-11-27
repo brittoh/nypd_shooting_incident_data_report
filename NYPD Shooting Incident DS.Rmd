@@ -1,0 +1,351 @@
+---
+title: "NYPD Shooting Incident Data Report"
+author: "Hugo Britto"
+date: "2022-11-27"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# packages  
+library(tidyverse)
+library(lubridate)
+library(hrbrthemes)
+library(viridis)
+```
+
+### 1- Import Data 
+Start an Rmd document that describes and imports the shooting project dataset in a reproducible manner.
+
+**Background:** \
+List of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year.
+
+This is a breakdown of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location and time of occurrence. In addition, information related to suspect and victim demographics is also included. This data can be used by the public to explore the nature of shooting/criminal activity. 
+
+**source**: https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic
+
+```{r import_data, message=FALSE}
+nypd_inc = read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+```
+
+
+### 2- Tidy and Transform Data 
+1- Check the dataset with summary() and head() \
+
+``` {r tidy_nypd_inc, message=FALSE, echo = FALSE}
+summary(nypd_inc)
+head(nypd_inc) 
+```
+
+2- Convert OCCUR_DATE to date format \
+  2.1- Add Year and Month to aggregate data \
+  2.2- Add day of week to aggregate data \
+  
+3- Add time period based on OCCUR_TIME\ 
+
+4- Substitute Na values for Unknown across PERP_AGE_GROUP to VIC_RACE\
+  4.1- Replace invalid groups ("1020","224", "940") for "Unknown" on PERP_AGE_GROUP\
+  
+5- Rename fields \
+
+6- Keep only fields that will be used in the the analyses \
+``` {r tidy_nypd_inc_2, message=FALSE, echo = TRUE}
+nypd_inc_2 = nypd_inc %>%
+  mutate(
+    inc_ct = 1,
+    OCCUR_DATE = mdy(OCCUR_DATE),
+    occur_yr_mth = format(as.Date(OCCUR_DATE, format="%d/%m/%Y"),"%Y%m"),
+    occur_yr = format(as.Date(OCCUR_DATE, format="%d/%m/%Y"),"%Y"),
+    occur_mth = format(as.Date(OCCUR_DATE, format="%d/%m/%Y"),"%m"),
+    day_of_wk_num = wday(OCCUR_DATE, week_start=1),
+    day_of_wk_str = wday(OCCUR_DATE, label=TRUE),
+    time_period = case_when(
+      (OCCUR_TIME >= hms::as_hms("00:00:00")) 
+        & (OCCUR_TIME < hms::as_hms("06:00:00")) 
+        ~ "Late at night - 00:00am 06:00am",
+      (OCCUR_TIME >= hms::as_hms("06:00:00"))
+        & (OCCUR_TIME < hms::as_hms("12:00:00"))
+         ~ "Morning - 6:00am 11:59pm",
+      (OCCUR_TIME >= hms::as_hms("12:00:00"))
+        & (OCCUR_TIME < hms::as_hms("18:00:00"))
+         ~ "Afternoon - 12:00pm 17:59pm",
+      (OCCUR_TIME >= hms::as_hms("18:00:00"))
+        & (OCCUR_TIME<= hms::as_hms("23:59:59"))
+         ~ "Night - 18:00pm 23:59pm"
+    ),
+    across(PERP_AGE_GROUP:VIC_RACE, ~replace_na(.,"UNKNOWN")),
+    susp_age_group = case_when(PERP_AGE_GROUP %in% c("1020","224", "940") 
+                               ~"UNKNOWN", TRUE ~ PERP_AGE_GROUP), # replace incorrect groups for Unknown
+    susp_sex = ifelse(PERP_SEX == "U", "UNKNOWN", PERP_SEX),
+    susp_race = case_when((PERP_RACE == "BLACK HISPANIC") 
+                          | (PERP_RACE == "WHITE HISPANIC") ~ "HISPANIC",
+                          TRUE ~ PERP_RACE),
+    vic_sex = ifelse(VIC_SEX == "U", "UNKNOWN", VIC_SEX),
+    vic_race = case_when((VIC_RACE == "BLACK HISPANIC") 
+                          | (VIC_RACE == "WHITE HISPANIC") ~ "HISPANIC",
+                          TRUE ~ VIC_RACE),    
+    murder_flag = ifelse(STATISTICAL_MURDER_FLAG == "TRUE", 1, 0),
+  ) %>%
+
+  rename(occur_date = "OCCUR_DATE", inc_id = "INCIDENT_KEY", 
+         vic_age_group = "VIC_AGE_GROUP", borough ="BORO" 
+         ) %>%
+    
+  select(c(inc_id, occur_date, occur_yr_mth,occur_yr, occur_mth,  
+           day_of_wk_num, day_of_wk_str, time_period, borough,  
+           murder_flag, susp_age_group, susp_sex, susp_race, 
+           vic_age_group, vic_sex, vic_race, inc_ct))
+
+summary(nypd_inc_2)
+head(nypd_inc_2)  
+```
+
+### 3- Visualise
+
+#### 3.1- Incidents & Murder by Years, Months, Dates - Time Series
+``` {r analyzing_nypd_inc_1, message=FALSE, echo = FALSE}
+inc_year_cts = nypd_inc_2 %>%
+  group_by(occur_yr) %>%
+  summarize(incidents_count = sum(inc_ct), murder_counts = sum(murder_flag))
+
+inc_year_cts %>%   
+  ggplot(aes(x = occur_yr, y = incidents_count)) +
+  geom_point(aes(color = "incidents_count")) +
+  geom_point(aes(y= murder_counts, color = "murder_counts")) +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Incidents and Murders by Year", y= NULL)  
+```
+
+**Analyses:**\
+From 2006 to 2019, there was a declining trend for incidents, but in 2020 and 2021 increased rapidly to numbers similar to 2006. Further, 2006 and 2021 had more than 2000 incidents and almost 500 hundred murders. 
+
+\
+``` {r analyzing_nypd_inc_2, message=FALSE, echo = FALSE}
+inc_mth_cts = nypd_inc_2 %>%
+  group_by(occur_mth) %>%
+  summarize(incidents_count = sum(inc_ct), murder_counts = sum(murder_flag))
+
+inc_mth_cts %>%   
+  ggplot(aes(x = occur_mth, y = incidents_count)) +
+  geom_point(aes(color = "incidents_count")) +
+  geom_point(aes(y= murder_counts, color = "murder_counts")) +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Incidents and Murders by Month", y= NULL)  
+```
+
+**Analyses:**\
+July and August (07, 08) have the highest incident numbers (3000). 
+In addition, we can see an increasing trend from February to July. 
+
+\
+``` {r analyzing_nypd_inc_3, message=FALSE, echo = FALSE}
+inc_dates_cts = nypd_inc_2 %>%
+  group_by(occur_date) %>%
+  summarize(incidents_count = sum(inc_ct), murder_counts = sum(murder_flag))
+
+inc_dates_cts %>%   
+  # filter(susp_race !="UNKNOWN") %>%  # remove UNKNOWN values
+  ggplot(aes(x = occur_date, y = incidents_count)) +
+  geom_line(aes(color = "incidents_count")) +
+  geom_line(aes(y=murder_counts, color = "murder_counts")) +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Incidents and Murders by Dates", y= NULL)  
+
+```
+
+**Analyses:**\
+Analyzing by dates, we can see a slight constant declining trend that ratifies 
+the progression by year. Moreover, there was a spike on 2020-07-05, where 
+New York had 47 incidents and 11 murders.
+
+\
+
+#### 3.2- Incidents & Murder by Time Period & Day of Week - Heat Map
+``` {r analyzing_nypd_inc_4, message=FALSE, echo = FALSE}
+inc_tp_dwk_cts = nypd_inc_2 %>%
+  group_by(time_period, day_of_wk_str) %>%
+  summarize(incidents_count = sum(inc_ct), , murder_counts = sum(murder_flag))
+
+inc_tp_dwk_cts %>% 
+  ggplot(aes(day_of_wk_str, time_period, fill= incidents_count)) + 
+  geom_tile()
+
+inc_tp_dwk_cts %>% 
+  ggplot(aes(day_of_wk_str, time_period, fill= murder_counts)) + 
+  geom_tile()
+```
+
+**Analyses:**\
+Using a heat map, we can confirm that most of the incidents and murders occurred 
+"Late at night - 00:00am 06:00am" on weekends. Further, it is rare to have 
+an incident in the morning regardless of the weekday.  
+
+\
+
+#### 3.3 - Incidents by Victim Sliced by Age, Sex, and Race
+``` {r analyzing_nypd_inc_5, message=FALSE, echo = FALSE}
+vic_cts = nypd_inc_2 %>%
+  group_by(vic_age_group, vic_sex, vic_race) %>%
+  summarize(incidents_count = sum(inc_ct)) 
+  # filter(!susp_age_group %in% c("1020","224", "940")) # remove incorrect age group classes
+
+# Print summary of suspects
+vic_cts
+# vic_cts %>% 
+#   print(n = 59)
+
+nypd_inc_2 %>% 
+  # filter(vic_age_group !="UNKNOWN") %>%  # remove UNKNOWN values
+  ggplot(aes(inc_ct, color=vic_age_group, fill=vic_age_group)) +
+  geom_histogram(binwidth = 0.15, position="dodge", alpha=0.3) +
+  theme_minimal() 
+  
+nypd_inc_2 %>%   
+  # filter(vic_sex !="UNKNOWN") %>%  # remove UNKNOWN values
+  ggplot(aes(inc_ct, color=vic_sex, fill=vic_sex)) +
+  geom_histogram(binwidth = 0.15, position="dodge", alpha=0.3) +
+  theme_minimal()
+
+nypd_inc_2 %>%   
+  # filter(susp_race !="UNKNOWN") %>%  # remove UNKNOWN values
+  ggplot(aes(inc_ct, color=vic_race, fill=vic_race)) +
+  geom_histogram(binwidth = 0.15, position="dodge", alpha=0.3) +
+  theme_minimal()
+```
+
+**Analyses:**\
+The majority of victims of incidents are males with age between 18 and 44 and 
+are of a Black race.  
+
+\
+
+#### 3.4 - Incidents by Suspect Sliced by Age, Sex, and Race
+``` {r analyzing_nypd_inc_6, message=FALSE, echo = FALSE}
+susp_cts = nypd_inc_2 %>%
+  group_by(susp_age_group, susp_sex, susp_race) %>%
+  summarise(incidents_count = sum(inc_ct))
+  # filter(!susp_age_group %in% c("1020","224", "940")) # remove incorrect age group classes
+
+# Print summary of suspects
+# susp_cts
+susp_cts %>%
+  print(n = 59)
+
+nypd_inc_2 %>% 
+  filter(!susp_age_group %in% c("1020","224", "940")) %>%  # remove incorrect age group classes
+  # filter(!susp_age_group %in% c("1020","224", "940", "UNKNOWN")) %>%  # remove incorrect age group classes
+  ggplot(aes(inc_ct, color=susp_age_group, fill=susp_age_group)) +
+  geom_histogram(binwidth = 0.15, position="dodge", alpha=0.3) +
+  theme_minimal() 
+  
+nypd_inc_2 %>%   
+  # filter(susp_sex !="UNKNOWN") %>%  # remove UNKNOWN values
+  ggplot(aes(inc_ct, color=susp_sex, fill=susp_sex)) +
+  geom_histogram(binwidth = 0.15, position="dodge", alpha=0.3) +
+  theme_minimal()
+
+nypd_inc_2 %>%   
+  # filter(susp_race !="UNKNOWN") %>%  # remove UNKNOWN values
+  ggplot(aes(inc_ct, color=susp_race, fill=susp_race)) +
+  geom_histogram(binwidth = 0.15, position="dodge", alpha=0.3) +
+  theme_minimal()
+```
+**Analyses:**\
+For suspects attribute, the analyses might be compromised for the lack of 
+information. For instance, the number of the unknown age group is double 
+the second one (18-24). Additionally, the race indicator is affected by the 
+lack of data since the number of unknown cases is the highest. 
+
+If we disregard the unknown cases, we can see a similar pattern from the victim 
+groups. A substantial part of the suspects belongs to the 18-24 and 25-44 
+age groups, and they are Black and male. The majority of victims of incidents 
+are Black males with ages between 18 and 44. 
+
+\
+
+#### 3.4- Incidents by Borough
+``` {r analyzing_nypd_inc_7, message=FALSE, echo = FALSE}
+inc_boro_cts = nypd_inc_2 %>%
+  group_by(borough, occur_date) %>%
+  summarize(incidents_count = sum(inc_ct), murder_counts = sum(murder_flag))
+
+nypd_inc_2 %>%   
+  ggplot(aes(inc_ct, color=borough, fill=borough)) +
+  geom_histogram(binwidth = 0.15, position="dodge", alpha=0.3) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+inc_boro_cts %>% 
+  ggplot( aes(x=borough, y=incidents_count, fill=borough)) +
+  geom_boxplot() +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="brown", size=0.4, alpha=0.1) +
+  theme_ipsum() +
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=11)
+  ) +
+  ggtitle("Incidents by Borough") +
+  xlab("")  
+  
+```
+
+**Analyses:**\
+The most dangerous borough is Brooklyn, which had the highest incident numbers 
+(10,365) and an average of 648 cases. The Bronx was in second place with 
+about 7,402 incidents. Then, Queens with 3,828 occurrences, and Manhattan with 
+3265. Staten Island is the safest borough in New York State, which had 736 
+incidents and an average of 46 cases per year. 
+
+The second graph shows that 75% of the sample had less than 3 incidents per day 
+for all boroughs. Moreover, Bronx and Brooklyn had outliers with 19 cases in 
+one day. Manhattan had 16 incidents in one day, Queens had 14, 
+and Staten Island had 13. 
+
+\
+
+### 4 - Predictive Analyses
+
+#### 4.1 - Linear Regression Model 
+Use linear regression model to predict murders based on incidents count and dates
+
+``` {r model_nypd_inc, message=FALSE, echo = FALSE}
+mod = lm(murder_counts ~ incidents_count, data = inc_dates_cts)
+summary(mod)
+
+inc_dates_cts %>% slice_min(incidents_count)
+
+inc_dates_cts %>% slice_max(incidents_count)
+
+x_grid = seq(1, 151)
+new_df = tibble(incidents_count = x_grid)
+inc_dates_cts %>% mutate(pred = predict(mod))
+
+murder_pred = inc_dates_cts %>% mutate(pred = predict(mod))
+# US_tot_w_pred
+
+murder_pred %>% ggplot() +
+  geom_point(aes(x = incidents_count, y = murder_counts), color = "blue") +
+  geom_point(aes(x = incidents_count, y = pred), color = "red")
+
+```
+
+
+### 5- Identify any bias possible in the data
+The fields (age group, sex, and race) about the suspect have a considerable 
+number of unknown cases, and this could be a possible bias since it may affect 
+the analysis. For example, if we decide to remove the unknown records, the 
+Black race will appear in the first place regarding suspects. The issue is that 
+not possible to confirm if this is true since the number of unknown suspects is 
+greater than the black group. So, this could be a potential bias.
+
+
+
+
+
